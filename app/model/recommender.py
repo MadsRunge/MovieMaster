@@ -69,6 +69,7 @@ class MovieRecommender:
         )
 
     def recommend_movies(self, movie_title, top_k=5):
+        """Get recommendations based on a single movie"""
         try:
             # Find movie index
             movie_idx = self.df[self.df['Series_Title'].str.lower() == movie_title.lower()].index[0]
@@ -97,9 +98,58 @@ class MovieRecommender:
 
             # Get top recommendations
             top_indices = combined_scores.argsort()[-top_k:][::-1]
-            recommendations = self.df.iloc[top_indices][['Series_Title', 'Genre', 'Director', 'IMDB_Rating']]
+            recommendations = self.df.iloc[top_indices][['Series_Title', 'Genre', 'Director', 'IMDB_Rating', 'Overview', 'Released_Year', 'Runtime', 'Poster_Link']]
 
             return recommendations.to_dict('records')
 
         except IndexError:
             return {"error": f"Movie '{movie_title}' not found in database."}
+            
+    def recommend_movies_multi(self, movie_titles, top_k=5):
+        """Get recommendations based on multiple input movies"""
+        try:
+            recommendations_per_movie = {}
+            
+            for title in movie_titles:
+                try:
+                    # Find movie index
+                    movie_idx = self.df[self.df['Series_Title'].str.lower() == title.lower()].index[0]
+
+                    # Get movie features
+                    movie_genre = self.mlb.transform([self.df.loc[movie_idx, 'Genre']])
+                    movie_overview = self.tokenizer.texts_to_sequences([self.df.loc[movie_idx, 'Overview']])
+                    movie_overview_padded = pad_sequences(movie_overview, maxlen=200, padding='post', truncating='post')
+
+                    # Get director features
+                    director_encoded = self.label_encoder.transform([self.df.loc[movie_idx, 'Director']])
+                    movie_director = np.eye(len(self.label_encoder.classes_))[director_encoded]
+
+                    # Get model predictions
+                    predictions = self.model.predict(
+                        [movie_genre, movie_overview_padded, movie_director],
+                        verbose=0
+                    )[0]
+
+                    # Combine with similarity scores
+                    similarity_scores = self.combined_similarity[movie_idx]
+                    combined_scores = 0.99 * predictions + 0.01 * similarity_scores
+
+                    # Remove input movies from recommendations
+                    for t in movie_titles:
+                        exclude_idx = self.df[self.df['Series_Title'].str.lower() == t.lower()].index
+                        if len(exclude_idx) > 0:
+                            combined_scores[exclude_idx[0]] = -1
+
+                    # Get top recommendations
+                    top_indices = combined_scores.argsort()[-top_k:][::-1]
+                    recommendations = self.df.iloc[top_indices][['Series_Title', 'Genre', 'Director', 'IMDB_Rating', 'Overview', 'Released_Year', 'Runtime', 'Poster_Link']].to_dict('records')
+                    
+                    recommendations_per_movie[title] = recommendations
+                    
+                except IndexError:
+                    recommendations_per_movie[title] = {"error": f"Movie '{title}' not found in database."}
+                    
+            return recommendations_per_movie
+
+        except Exception as e:
+            return {"error": str(e)}
